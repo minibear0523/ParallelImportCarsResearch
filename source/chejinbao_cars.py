@@ -9,9 +9,10 @@ import requests
 from lxml import etree
 from gevent.pool import Pool
 from gevent.queue import Queue
+import pymongo
 
-START_URL = '/online.html?brandID=&seriesID=&startprice=&endprice=&model=&emissions=0&version=&saleType=&year=&provinceID=&cityID=&orderByType=&page=1'
-BASE_URL = 'http://www.chejinbao.cn/cars'
+START_URL = 'online.html?brandID=&seriesID=&startprice=&endprice=&model=&emissions=0&version=&saleType=&year=&provinceID=&cityID=&orderByType=&page=%s'
+BASE_URL = 'http://www.chejinbao.cn/cars/'
 
 page_set = set()
 
@@ -19,6 +20,10 @@ pool = Pool(size=10)
 list_queue = Queue()
 detail_queue = Queue()
 item_queue = Queue()
+
+client = pymongo.MongoClient()
+db = client['Market_Research']
+collection = db['chejinbao_cars']
 
 HEADERS = {
     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8',
@@ -31,7 +36,8 @@ HEADERS = {
 }
 
 def crawl():
-    crawl_list_page(START_URL)
+    for i in range(1, 17):
+        list_queue.put(START_URL % i)
 
 def list_loop():
     while True:
@@ -46,7 +52,8 @@ def detail_loop():
 def item_loop():
     while True:
         item = item_queue.get()
-        # TODO: 存储到mongodb
+        car_id = collection.insert_one(item).inserted_id
+        print('%s: %s' % (car_id, item['chejinbao_id']))
 
 def crawl_list_page(url):
     """
@@ -56,27 +63,59 @@ def crawl_list_page(url):
         return
     else:
         page_set.add(url)
-        req = requests.get(BASE_URL + url, headers=HEADERS)
+        url = BASE_URL + url
+        req = requests.get(url, headers=HEADERS)
         if req.status_code != 200:
-            print('%s 请求失败!' % url)
+            print('%s 请求失败: %s!' % (url, req.status_code))
             return
         tree = etree.HTML(req.text.encode('utf-8'))
         links = tree.xpath('//div[@class="dimension"]/a/@href')
         for link in links:
             detail_queue.put(link)
 
-        page_links = tree.xpath('//ul[@id="pageZone"]/li/a/@href')
-        for link in page_links:
-            list_queue.put(link)
-
 def crawl_detail_page(url):
     """
     抓取详情页面, 只需要提取一些特殊数据进行对比分析即可
-    车名, 排量, 价格区间, 现车/期车, 版本, 车型
+    品牌, 车名, 排量, 价格区间, 现车/期车, 版本, 车型
     """
-    req = requests.get(BASE_URL + url, headers=HEADERS)
+    chejinbao_id = url.replace('.html', '')
+    url = BASE_URL + url
+    req = requests.get(url, headers=HEADERS)
     if req.status_code != 200:
-        print('%s 请求失败' % url)
+        print('%s 请求失败: %s!' % (url, req.status_code))
         return
     tree = etree.HTML(req.text.encode('utf-8'))
-    
+    # 解析品牌, 车名和排量
+    name = ''.join(tree.xpath('//span[@id="title"]/text()')).strip()
+    displacement = tree.xpath('//div[@class="details"]/em[2]/text()')[0].strip()
+    displacement = displacement.replace(' ', '').replace('\n', '').replace('\t', '').replace('\r', '')[3:]
+    # 获取价格区间
+    price = ''.join(tree.xpath('//span[@id="carPrice"]/text()')).strip()
+    price = price.replace(' ','').replace('\n', '').replace('\t', '').replace('\r', '')
+    # 现车/期车
+    sale_type = tree.xpath('//span[@id="saleType"]/text()')[0].strip()
+    # 规格
+    version = tree.xpath('//span[@id="version"]/text()')[0].strip()
+    # 燃油类型
+    fuel_type = tree.xpath('//span[@id="engine_fuel_type"]/text()')[0].strip()[5:]
+    # 级别: SUV等
+    model = tree.xpath('//span[@id="base_level"]/text()')[0].strip()[3:]
+    car = {
+        'name': name,
+        'displacement': displacement,
+        'price': price,
+        'sale_type': sale_type,
+        'version': version,
+        'fuel_type': fuel_type,
+        'model': model,
+        'chejinbao_id': chejinbao_id
+    }
+    item_queue.put(car)
+
+
+if __name__ == '__main__':
+    crawl()
+    pool.spawn(list_loop)
+    pool.spawn(detail_loop)
+    pool.spawn(item_loop)
+    pool.join()

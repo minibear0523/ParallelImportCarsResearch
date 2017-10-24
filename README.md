@@ -1,2 +1,2 @@
-# ParallelImportCarsResearch
-Parallel Import Cars Market Research Source Code
+# 中国平行进口汽车行业调研报告
+关于中国平行进口汽车市场调研报告的源代码, 主要包括相关的数据抓取和Jupyter Notebook进行数据清洗.
